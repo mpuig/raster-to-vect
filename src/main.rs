@@ -10,16 +10,19 @@ use svg::Document;
 use svg::node::element::{Path as SvgPath, Rectangle};
 use svg::node::element::path::Data;
 
+
 fn main() {
     println!("Read the input bitmap image.");
     let color_image = image::open("input.png").unwrap();
 
     println!("Quantize the image using k-means clustering");
-    let num_colors = 16; // Adjust this value based on your requirements
-    // let quantized_image = quantize_colors(&color_image.to_rgb8(), num_colors);
-    let quantized_image = encode(&color_image, num_colors);
+    let num_colors = 16;
+    let quantized_image = quantize_colors(&color_image, num_colors);
+    image::save_buffer("quantized_image.png", &quantized_image.clone().into_raw(),
+                       quantized_image.clone().width(), quantized_image.clone().height(),
+                       image::ColorType::Rgb8).expect("TODO: panic message");
 
-    println!("Preprocess the image (optional)");
+    println!("Preprocess the image");
     let preprocessed_image = preprocess_image(&color_image);
 
     println!("Apply the tracing algorithm");
@@ -32,34 +35,32 @@ fn main() {
     }
 }
 
-fn encode(imag: &image::DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let pixels = imag
+fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let pixels = image
         .pixels()
         .map(|(_, _, p)| {
             let cols = p.channels();
             Color::new(cols[0], cols[1], cols[2], cols[3])
         })
         .collect::<Vec<_>>();
-    let width = imag.width() as usize;
-    let height = imag.height() as usize;
-    let (_, indexed_pixels) = convert_to_indexed(
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let (palette, indexed_pixels) = convert_to_indexed(
         &pixels,
         width,
         num_colors,
         &optimizer::KMeans,
-        &ditherer::FloydSteinberg::checkered(),
+        &ditherer::FloydSteinberg::new(),
     );
+    println!("Create the final image by color lookup from the palette");
+    let output_data: Vec<u8> = indexed_pixels
+        .iter()
+        .flat_map(|&color_index| {
+            let color = palette.get(color_index as usize).unwrap();
+            vec![color.r, color.g, color.b]
+        })
+        .collect();
 
-    // Allocate a new buffer for the RGB image, 3 bytes per pixel
-    let mut output_data = vec![0u8; width * height * 3];
-
-    let mut i = 0;
-    // Iterate through 4-byte chunks of the image data (RGBA bytes)
-    for chunk in indexed_pixels.chunks(4) {
-        // ... and copy each of them to output, leaving out the A byte
-        output_data[i..i + 3].copy_from_slice(&chunk[0..3]);
-        i += 3;
-    }
     RgbImage::from_raw(width as u32, height as u32, output_data).unwrap()
 }
 
