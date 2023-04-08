@@ -17,6 +17,7 @@ use svg::node::element::path::Data;
 
 use structs::{Path, Point, Segment};
 
+
 mod rdp;
 mod structs;
 
@@ -32,29 +33,54 @@ fn main() {
     let dimensions = GenericImageView::dimensions(&color_image);
 
     println!("Quantize the image using k-means clustering");
-    let quantized_image = quantize_colors(&color_image, num_colors);
+    let (palette, quantized_image) = quantize_colors(&color_image, num_colors);
     let filtered_quantized_image = median_filter(&quantized_image, 1, 1);
     if let Err(e) = filtered_quantized_image.save_with_format("1_quantized_image.png", image::ImageFormat::Png) {
         eprintln!("Error saving edge image: {:?}", e);
     }
+    let mut paths: Vec<(Path)> = Vec::new();
 
-    println!("Preprocess the image");
-    let edge_image = edge_detection(&filtered_quantized_image, gaussian_blur_dev, edge_low_threshold, edge_high_threshold);
+    let match_color = Rgb([255, 255, 255]); // White
+    let non_match_color = Rgb([0, 0, 0]); // Black
+    for color in palette {
+        let rgb_color = Rgb([color.r, color.g, color.b]);
 
-    println!("Extract contours from the edge-detected image");
-    let contours = extract_contours(&edge_image, &filtered_quantized_image);
+        //replace non target colors
+        let mut tmp: ImageBuffer<Rgb<u8>, Vec<u8>> = filtered_quantized_image.clone();
+        for (_x, _y, pixel) in tmp.enumerate_pixels_mut() {
+            *pixel = if *pixel == rgb_color {
+                match_color
+            } else {
+                non_match_color
+            };
+        }
 
-    println!("Apply the tracing algorithm");
-    let vector_data = trace_bitmap(contours, &filtered_quantized_image);
+        println!("Preprocess the image for color {}, {}, {}", color.r, color.g, color.b);
+        let edge_image = edge_detection(&tmp, edge_low_threshold, edge_high_threshold);
+        let filename = format!("3_edge_image_{}_{}_{}.png", color.r, color.g, color.b);
+        if let Err(e) = edge_image.save_with_format(filename, image::ImageFormat::Png) {
+            eprintln!("Error saving edge image: {:?}", e);
+        }
+
+        println!("Extract contours from the edge-detected image");
+        let contours = extract_contours(&edge_image, &tmp);
+
+        println!("Apply the tracing algorithm");
+        let vector_data = trace_bitmap(contours, rgb_color);
+        for data in vector_data {
+            paths.push(data)
+        }
+    }
+
 
     println!("Export the vector data to a file format (e.g., SVG)");
-    match export_vector_data(&vector_data, "output.svg", dimensions.0, dimensions.1) {
+    match export_vector_data(&paths, "output.svg", dimensions.0, dimensions.1) {
         Ok(_) => println!("Vector data successfully exported."),
         Err(e) => eprintln!("Failed to export vector data: {}", e),
     }
 }
 
-fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn quantize_colors(image: &DynamicImage, num_colors: usize) -> (Vec<Color>, ImageBuffer<Rgb<u8>, Vec<u8>>) {
     // Apply Gaussian blur, adjust the sigma value to control the amount of blur
     //let blurred_image = image::imageops::blur(image, 4.5);
 
@@ -83,10 +109,10 @@ fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u
         })
         .collect();
 
-    RgbImage::from_raw(width as u32, height as u32, output_data).unwrap()
+    (palette, RgbImage::from_raw(width as u32, height as u32, output_data).unwrap())
 }
 
-fn edge_detection(color_image: &RgbImage, gaussian_blur_dev: f32, edge_low_threshold: f32, edge_high_threshold: f32) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+fn edge_detection(color_image: &RgbImage, edge_low_threshold: f32, edge_high_threshold: f32) -> ImageBuffer<Luma<u8>, Vec<u8>> {
     println!("Convert the image to grayscale");
     let grayscale_image: GrayImage = color_image.convert();
     if let Err(e) = grayscale_image.save_with_format("3_grayscale_image.png", image::ImageFormat::Png) {
@@ -107,9 +133,9 @@ fn edge_detection(color_image: &RgbImage, gaussian_blur_dev: f32, edge_low_thres
     edge_image
 }
 
-fn trace_bitmap(contours: Vec<Path>, color_image: &RgbImage) -> Vec<Path> {
+fn trace_bitmap(contours: Vec<Path>, color: Rgb<u8>) -> Vec<Path> {
     println!("Simplify the contours using the Ramer-Douglas-Peucker algorithm");
-    let epsilon = 1.0;
+    let epsilon = 0.1;
     let simplified_contours: Vec<Path> = contours
         .into_iter()
         .map(|path| {
@@ -121,7 +147,7 @@ fn trace_bitmap(contours: Vec<Path>, color_image: &RgbImage) -> Vec<Path> {
 
             let simplified_points = rdp::ramer_douglas_peucker(points, epsilon);
 
-            let mut simplified_path = Path::new(Point::new(simplified_points[0].0, simplified_points[0].1), path.color);
+            let mut simplified_path = Path::new(Point::new(simplified_points[0].0, simplified_points[0].1), color);
             for point in simplified_points.iter().skip(1) {
                 simplified_path.line_to(Point::new(point.0, point.1));
             }
