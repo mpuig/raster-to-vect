@@ -4,13 +4,17 @@ use std::io::Write;
 
 use exoquant::{Color, convert_to_indexed, ditherer, optimizer};
 use image::{DynamicImage, GenericImageView, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
+use image::buffer::ConvertBuffer;
 use image::DynamicImage::ImageLuma8;
+use imageproc::distance_transform::Norm;
 use imageproc::drawing::Canvas;
 use imageproc::edges::canny;
-use imageproc::filter::gaussian_blur_f32;
+use imageproc::filter::{gaussian_blur_f32, median_filter};
+use imageproc::morphology::{close, dilate, erode};
 use svg::Document;
 use svg::node::element::{Path as SvgPath, Rectangle};
 use svg::node::element::path::Data;
+
 use structs::{Path, Point, Segment};
 
 mod rdp;
@@ -18,7 +22,7 @@ mod structs;
 
 
 fn main() {
-    let num_colors = 4;
+    let num_colors = 8;
     let gaussian_blur_dev = 1.5;
     let edge_low_threshold = 10.0;
     let edge_high_threshold = 50.0;
@@ -29,21 +33,19 @@ fn main() {
 
     println!("Quantize the image using k-means clustering");
     let quantized_image = quantize_colors(&color_image, num_colors);
-        if let Err(e) = quantized_image.save_with_format("1_quantized_image.png", image::ImageFormat::Png) {
+    let filtered_quantized_image = median_filter(&quantized_image, 1, 1);
+    if let Err(e) = filtered_quantized_image.save_with_format("1_quantized_image.png", image::ImageFormat::Png) {
         eprintln!("Error saving edge image: {:?}", e);
     }
 
     println!("Preprocess the image");
-    let edge_image = edge_detection(&quantized_image, gaussian_blur_dev, edge_low_threshold, edge_high_threshold);
-    if let Err(e) = edge_image.save_with_format("2_edge_image.png", image::ImageFormat::Png) {
-        eprintln!("Error saving edge image: {:?}", e);
-    }
+    let edge_image = edge_detection(&filtered_quantized_image, gaussian_blur_dev, edge_low_threshold, edge_high_threshold);
 
     println!("Extract contours from the edge-detected image");
-    let contours = extract_contours(&edge_image, &quantized_image);
+    let contours = extract_contours(&edge_image, &filtered_quantized_image);
 
     println!("Apply the tracing algorithm");
-    let vector_data = trace_bitmap(contours, &quantized_image);
+    let vector_data = trace_bitmap(contours, &filtered_quantized_image);
 
     println!("Export the vector data to a file format (e.g., SVG)");
     match export_vector_data(&vector_data, "output.svg", dimensions.0, dimensions.1) {
@@ -53,6 +55,9 @@ fn main() {
 }
 
 fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    // Apply Gaussian blur, adjust the sigma value to control the amount of blur
+    //let blurred_image = image::imageops::blur(image, 4.5);
+
     let pixels = image
         .pixels()
         .map(|(_, _, p)| {
@@ -69,7 +74,7 @@ fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u
         &optimizer::KMeans,
         &ditherer::FloydSteinberg::new(),
     );
-    println!("Create the final image by color lookup from the palette");
+    // Create the final image by color lookup from the palette
     let output_data: Vec<u8> = indexed_pixels
         .iter()
         .flat_map(|&color_index| {
@@ -83,19 +88,21 @@ fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u
 
 fn edge_detection(color_image: &RgbImage, gaussian_blur_dev: f32, edge_low_threshold: f32, edge_high_threshold: f32) -> ImageBuffer<Luma<u8>, Vec<u8>> {
     println!("Convert the image to grayscale");
-    let grayscale_image = ImageBuffer::from_fn(
-        color_image.width(),
-        color_image.height(),
-        |x, y| {
-            let pixel = color_image.get_pixel(x, y);
-            Luma([pixel.to_luma()[0]])
-        });
-
-    println!("Apply Gaussian blur with a specified standard deviation");
-    let blurred_image = gaussian_blur_f32(&grayscale_image, gaussian_blur_dev);
+    let grayscale_image: GrayImage = color_image.convert();
+    if let Err(e) = grayscale_image.save_with_format("3_grayscale_image.png", image::ImageFormat::Png) {
+        eprintln!("Error saving edge image: {:?}", e);
+    }
+    let filtered_image = median_filter(&grayscale_image, 1, 1);
+    if let Err(e) = filtered_image.save_with_format("3_filtered_image.png", image::ImageFormat::Png) {
+        eprintln!("Error saving edge image: {:?}", e);
+    }
 
     println!("Apply the Canny edge detection algorithm");
-    let edge_image = canny(&blurred_image, edge_low_threshold, edge_high_threshold);
+    let edge_image = canny(&filtered_image, edge_low_threshold, edge_high_threshold);
+    if let Err(e) = edge_image.save_with_format("3_edge_image.png", image::ImageFormat::Png) {
+        eprintln!("Error saving edge image: {:?}", e);
+    }
+
 
     edge_image
 }
