@@ -6,24 +6,27 @@ use exoquant::{Color, convert_to_indexed, ditherer, optimizer};
 use image::{DynamicImage, GenericImageView, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::edges::canny;
 use imageproc::filter::gaussian_blur_f32;
+use palette::Srgb;
 use svg::Document;
 use svg::node::element::{Path as SvgPath, Rectangle};
 use svg::node::element::path::Data;
 
 
 fn main() {
+    let num_colors = 4;
+    let gaussian_blur_dev = 1.5;
+
     println!("Read the input bitmap image.");
     let color_image = image::open("input.png").unwrap();
 
     println!("Quantize the image using k-means clustering");
-    let num_colors = 16;
     let quantized_image = quantize_colors(&color_image, num_colors);
     image::save_buffer("quantized_image.png", &quantized_image.clone().into_raw(),
                        quantized_image.clone().width(), quantized_image.clone().height(),
                        image::ColorType::Rgb8).expect("TODO: panic message");
 
     println!("Preprocess the image");
-    let preprocessed_image = preprocess_image(&color_image);
+    let preprocessed_image = preprocess_image(&quantized_image, gaussian_blur_dev);
 
     println!("Apply the tracing algorithm");
     let vector_data = trace_bitmap(&preprocessed_image, &quantized_image);
@@ -64,13 +67,15 @@ fn quantize_colors(image: &DynamicImage, num_colors: usize) -> ImageBuffer<Rgb<u
     RgbImage::from_raw(width as u32, height as u32, output_data).unwrap()
 }
 
-fn preprocess_image(image: &DynamicImage) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+fn preprocess_image(color_image: &RgbImage, gaussian_blur_dev: f32) -> ImageBuffer<Luma<u8>, Vec<u8>> {
     // Convert the image to grayscale
-    let grayscale_image = image.to_luma8();
+    let grayscale_image = ImageBuffer::from_fn(color_image.width(), color_image.height(), |x, y| {
+        let pixel = color_image.get_pixel(x, y);
+        Luma([pixel.to_luma()[0]])
+    });
 
     // Apply Gaussian blur with a specified standard deviation
-    let std_dev = 1.5; // Adjust this value based on your requirements
-    let blurred_image = gaussian_blur_f32(&grayscale_image, std_dev);
+    let blurred_image = gaussian_blur_f32(&grayscale_image, gaussian_blur_dev);
 
     blurred_image
 }
@@ -113,11 +118,11 @@ fn ramer_douglas_peucker(points: Vec<(f64, f64)>, epsilon: f64) -> Vec<(f64, f64
     result
 }
 
-fn trace_bitmap(image: &ImageBuffer<Luma<u8>, Vec<u8>>, color_image: &RgbImage) -> Vec<Path> {
+fn trace_bitmap(preprocessed_image: &ImageBuffer<Luma<u8>, Vec<u8>>, color_image: &RgbImage) -> Vec<Path> {
     println!("Apply the Canny edge detection algorithm");
     let low_threshold = 10.0;
     let high_threshold = 50.0;
-    let edge_image = canny(image, low_threshold, high_threshold);
+    let edge_image = canny(preprocessed_image, low_threshold, high_threshold);
 
     println!("Extract contours from the edge-detected image");
     let contours = extract_contours(&edge_image, color_image);
@@ -200,7 +205,6 @@ fn trace_contour(edge_image: &GrayImage, color_image: &RgbImage, visited: &mut V
     contour_points
 }
 
-
 fn export_vector_data(paths: &[Path], file_name: &str, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
     let mut document = Document::new()
         .set("viewBox", (0, 0, width, height))
@@ -228,10 +232,15 @@ fn export_vector_data(paths: &[Path], file_name: &str, width: u32, height: u32) 
                 }
             }
         }
+        let red = path.color[0] as u8;
+        let green = path.color[1] as u8;
+        let blue = path.color[2] as u8;
+        let color_string = format!("rgb({}, {}, {})", red, green, blue);
+
 
         let svg_path = SvgPath::new()
             .set("fill", "none")
-            .set("stroke", "black")
+            .set("stroke", color_string)
             .set("stroke-width", 1)
             .set("d", data);
 
